@@ -77,7 +77,9 @@ data class WatchList(
             val pool = if (filter.showLikely) options else options.filter { it.tier != WatchTier.LIKELY }
             fun langOf(o: WatchOption) = o.facets.language ?: WatchFilter.UNKNOWN
             fun prefIndex(o: WatchOption) = preferredLanguages.indexOf(langOf(o)).let { if (it < 0) Int.MAX_VALUE else it }
-            val order = compareBy<WatchOption>({ it.tier.ordinal }, ::prefIndex)
+            val order = compareByDescending<WatchOption> { it.actualVideoRank }
+                .thenBy { it.tier.ordinal }
+                .thenBy(::prefIndex)
             val (passing, failing) = pool.partition(filter::accepts)
             val shown = passing.sortedWith(order) + if (filter.strict) emptyList() else failing.sortedWith(order)
             val languageCounts = LinkedHashMap<String, Int>()
