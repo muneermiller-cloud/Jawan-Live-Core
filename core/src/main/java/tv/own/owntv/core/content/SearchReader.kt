@@ -29,7 +29,7 @@ data class SearchResults(
     val channels: List<ChannelSearchResult> = emptyList(),
     val movies: List<MovieEntity> = emptyList(),
     val series: List<SeriesEntity> = emptyList(),
-    /** Programmes on now or later today whose title matches, on now first. Only from a typed query. */
+    /** Upcoming guide programmes whose title or description matches, on now first. */
     val programmes: List<ProgrammeSearchResult> = emptyList(),
 ) {
     val isEmpty: Boolean get() = channels.isEmpty() && movies.isEmpty() && series.isEmpty() && programmes.isEmpty()
@@ -148,7 +148,7 @@ class SearchReader(
     }
 
     /**
-     * Programmes whose title contains [query], from now until [PROGRAMME_HORIZON_MS] ahead, each on a
+     * Programmes whose title or description contains [query] in the stored upcoming guide, each on a
      * channel this profile may see. Only the stored (XMLTV) guide is searched — the provider's own
      * short EPG is fetched per channel and is never in the table.
      *
@@ -163,14 +163,10 @@ class SearchReader(
     ): List<ProgrammeSearchResult> {
         val now = System.currentTimeMillis()
         // The stored window is widened by [PROGRAMME_SHIFT_SLACK_MS] on both sides, so a shifted channel
-        // still finds its rows; the exact window is applied after the shift, on the user's clock. The
-        // slack stays small: rows that ended before it would use up [PROGRAMME_ROWS] and push out what
-        // is on now.
+        // still finds its rows; the exact upcoming window is applied after the shift, on the user's clock.
         val rows = epgDao.searchTitles(
             query,
             now - PROGRAMME_SHIFT_SLACK_MS,
-            now + PROGRAMME_HORIZON_MS + PROGRAMME_SHIFT_SLACK_MS,
-            PROGRAMME_ROWS,
         )
         if (rows.isEmpty()) return emptyList()
         val byKey = rows.groupBy { it.epgChannelId }
@@ -190,13 +186,12 @@ class SearchReader(
                 val shift = EpgShift.minutesFor(cust, ch, globalShift)
                 val named = cust.itemNames[CustomizeKeys.channel(ch)]?.let { ch.copy(name = it) } ?: ch
                 EpgShift.apply(EpgDedupe.collapse(byKey[key].orEmpty()), shift)
-                    .filter { it.stopMs > now && it.startMs < now + PROGRAMME_HORIZON_MS }
+                    .filter { it.stopMs > now }
                     .map { key to ProgrammeSearchResult(it, named) }
             }
             .distinctBy { (key, found) -> Triple(key, found.programme.startMs, found.programme.title) }
             .map { it.second }
             .sortedWith(compareBy({ it.programme.startMs > now }, { it.programme.startMs }))
-            .take(PROGRAMME_LIMIT)
     }
 
     /** One of the curated lists shown before anything is typed. Bounded, and already source-filtered. */
@@ -258,15 +253,8 @@ class SearchReader(
          */
         const val MATCH_LIMIT = 500
 
-        /** How far ahead "On TV" looks, and how many programmes it lists. */
-        private const val PROGRAMME_HORIZON_MS = 12 * 60 * 60_000L
-        private const val PROGRAMME_LIMIT = 20
-
-        /** The largest guide shift "On TV" still allows for when reading stored times. */
+        /** The largest guide shift still allowed for when reading stored times. */
         private const val PROGRAMME_SHIFT_SLACK_MS = 2 * 60 * 60_000L
-
-        /** Raw rows read before mapping to channels; one programme can be on many guide channels. */
-        private const val PROGRAMME_ROWS = 300
 
         /** Keys per IN (…) lookup, inside SQLite's variable limit. */
         private const val KEY_CHUNK = 400
