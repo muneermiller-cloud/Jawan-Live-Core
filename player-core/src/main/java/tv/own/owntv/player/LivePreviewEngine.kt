@@ -1241,7 +1241,7 @@ class LivePreviewEngine(
 
         override fun onVideoSizeChanged(videoSize: VideoSize) {
             if (videoSize.height > 0) {
-                _videoRes.value = "${videoSize.height}p"
+                _videoRes.value = classifyResolution(videoSize.width, videoSize.height)
                 if (videoSize.height > 1080) sawUhd = true // mark UHD → full decoder release on leave
             }
             if (videoSize.width > 0 && videoSize.height > 0) {
