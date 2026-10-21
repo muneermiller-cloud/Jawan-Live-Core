@@ -56,15 +56,22 @@ interface WatchData {
 class WatchReader(private val data: WatchData) {
 
     private class Raw(val guide: List<WatchOption>, val event: List<ChannelEntity>, val likely: List<ChannelEntity>)
+    private data class MatchSearchSignature(
+        val startMs: Long,
+        val leagueSlug: String,
+        val sides: List<Triple<String, String, String>>,
+        val broadcasts: List<String>,
+    )
 
     private val lock = Mutex()
     private var cacheFingerprint: String? = null
     private val cache = HashMap<String, Raw>()
+    private val cacheMatchSignature = HashMap<String, MatchSearchSignature>()
     private val likelyByLeague = HashMap<String, List<ChannelEntity>>()
 
     /** Forget every ranked match, so the next [watchFor] matches again from the guide ("Refresh now"). */
     suspend fun clear() = lock.withLock {
-        cache.clear(); likelyByLeague.clear(); cacheFingerprint = null
+        cache.clear(); cacheMatchSignature.clear(); likelyByLeague.clear(); cacheFingerprint = null
     }
 
     /** How many match runs have happened (tests prove a score refresh adds none). */
@@ -78,9 +85,9 @@ class WatchReader(private val data: WatchData) {
     ): Map<String, List<WatchOption>> = withContext(Dispatchers.Default) { lock.withLock {
         val fingerprint = data.fingerprint()
         if (fingerprint != cacheFingerprint) {
-            cache.clear(); likelyByLeague.clear(); cacheFingerprint = fingerprint
+            cache.clear(); cacheMatchSignature.clear(); likelyByLeague.clear(); cacheFingerprint = fingerprint
         }
-        val todo = matches.filter { it.key !in cache }.distinctBy { it.key }
+        val todo = matches.filter { cache[it.key] == null || cacheMatchSignature[it.key] != matchSearchSignature(it) }.distinctBy { it.key }
         for ((start, slot) in todo.groupBy { it.startMs }) runSlot(start, slot)
         matches.associate { m -> m.key to ranked(cache[m.key] ?: Raw(emptyList(), emptyList(), emptyList()), rememberedFor(m)) }
     } }
@@ -93,7 +100,8 @@ class WatchReader(private val data: WatchData) {
         withContext(Dispatchers.Default) {
             lock.withLock {
                 if (data.fingerprint() != cacheFingerprint) return@withLock null
-                cache[match.key]?.let { ranked(it, rememberedFor(match)) }
+                cache[match.key]?.takeIf { cacheMatchSignature[match.key] == matchSearchSignature(match) }
+                    ?.let { ranked(it, rememberedFor(match)) }
             }
         }
 
@@ -102,7 +110,7 @@ class WatchReader(private val data: WatchData) {
         return WatchMatcher.rank(raw.guide, raw.event, raw.likely, rememberedCandidates, remembered)
     }
 
-    /** One kick-off slot: one guide read, one synopsis read for near-misses, then the name searches. */
+    /** One kick-off slot: guide title and synopsis matching, then event and broadcaster searches. */
     private suspend fun runSlot(start: Long, slot: List<Match>) {
         runs++
         val keys = slot.map { WatchMatcher.Keys(it) }
@@ -117,14 +125,15 @@ class WatchReader(private val data: WatchData) {
                 WatchMatcher.Hit.NONE -> Unit
             }
         }
-        if (partial.isNotEmpty()) {
-            val texts = partial.keys.take(MAX_DESCRIPTIONS).chunked(ID_CHUNK).fold(HashMap<Long, String>()) { acc, ids ->
+        val synopsisCandidates = (partial.keys + programmes.asSequence().map { it.id }.filter { id -> partial[id] == null }).take(MAX_DESCRIPTIONS)
+        if (synopsisCandidates.any()) {
+            val texts = synopsisCandidates.chunked(ID_CHUNK).fold(HashMap<Long, String>()) { acc, ids ->
                 acc.apply { putAll(data.descriptions(ids)) }
             }
             val byId = programmes.associateBy { it.id }
             for ((id, text) in texts) {
                 val all = tokens.getValue(id) + TeamNames.tokens(text)
-                partial[id]?.forEach { k ->
+                keys.forEach { k ->
                     if (WatchMatcher.hit(k, all) == WatchMatcher.Hit.CONFIRMED) {
                         confirmed.getOrPut(k.match.key) { mutableListOf() } += byId.getValue(id)
                     }
@@ -144,6 +153,7 @@ class WatchReader(private val data: WatchData) {
                 data.channelsNamingAll(ftsWords(k.competitionNames.first()))
             }.plus(k.broadcasterChannels()).filter { WatchMatcher.isLikely(k, it.name) }
             cache[m.key] = Raw(guide, event, likely)
+            cacheMatchSignature[m.key] = matchSearchSignature(m)
         }
         Log.d(TAG, "slot start=$start matches=${slot.size} programmes=${programmes.size} near=${partial.size}")
     }
@@ -159,6 +169,13 @@ class WatchReader(private val data: WatchData) {
         const val SLOT_AFTER_MS = 30 * 60_000L
         private const val MAX_DESCRIPTIONS = 600
         private const val ID_CHUNK = 400
+
+        private fun matchSearchSignature(m: Match) = MatchSearchSignature(
+            startMs = m.startMs,
+            leagueSlug = m.leagueSlug,
+            sides = m.competitors.map { Triple(it.team.id, it.team.name, it.team.shortName) },
+            broadcasts = m.broadcasts.map { it.name },
+        )
 
         /** The words of [name] for a channel search, accents kept (the full-text index does not fold them). */
         internal fun ftsWords(name: String): List<String> =
