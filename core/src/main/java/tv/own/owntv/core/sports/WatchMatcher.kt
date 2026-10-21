@@ -11,8 +11,8 @@ enum class WatchTier { GUIDE, EVENT, REMEMBERED, LIKELY }
 
 /**
  * What the filters read off a channel's name: its portable name (provider tags removed, [portableKey]
- * for comparing), country prefix ("DE|"), language and picture quality (ProviderCatalogMetadata ranks:
- * 0 unknown, 1 SD, 2 HD, 3 FHD, 4 UHD, 5 8K). Unknown is null / 0, never a guess.
+ * for comparing), country prefix ("DE|") and language. Quality is recorded separately from the
+ * playback engine's observed video dimensions; channel-name labels are not evidence of resolution.
  */
 data class ChannelFacets(val name: String, val country: String?, val language: String?, val qualityRank: Int) {
     val portableKey: String get() = EpgMatcher.normalizeForEpg(name)
@@ -32,14 +32,12 @@ data class ChannelFacets(val name: String, val country: String?, val language: S
         fun of(channelName: String): ChannelFacets {
             val parsed = ProviderTags.parse(channelName)
             val meta = ProviderCatalogMetadataParser.parse(parsed.name, null)
-            val tagRank = if (parsed.tags.isEmpty()) 0
-            else ProviderCatalogMetadataParser.parse(parsed.tags.joinToString(" "), null).qualityRank
             val country = parsed.country
             return ChannelFacets(
                 name = parsed.name,
                 country = country,
                 language = country?.let { COUNTRY_LANGUAGE[it] } ?: meta.language?.takeIf { it != "UK" },
-                qualityRank = maxOf(meta.qualityRank, tagRank),
+                qualityRank = 0,
             )
         }
     }
@@ -51,6 +49,9 @@ data class WatchOption(
     val tier: WatchTier,
     val guideTitle: String? = null,
     val facets: ChannelFacets = ChannelFacets.of(channel.name),
+    /** Actual video quality learned from the playback engine. Unknown stays 0. */
+    val actualVideoRank: Int = 0,
+    val actualVideoLabel: String? = null,
 )
 
 /**
@@ -79,8 +80,8 @@ object WatchMatcher {
     }
 
     /**
-     * Both teams, or one team and the competition → confirmed. One team alone → partial, worth reading
-     * the synopsis. A session with no sides (racing) is confirmed by its competition alone.
+     * Either team name is enough to associate an EPG entry with the fixture. A session with no sides
+     * (racing) is matched by its competition.
      */
     fun hit(keys: Keys, tokens: Set<String>): Hit {
         val home = keys.home?.foundIn(tokens) == true
@@ -88,19 +89,15 @@ object WatchMatcher {
         val league = keys.league.foundIn(tokens)
         return when {
             keys.home == null && keys.away == null -> if (league) Hit.CONFIRMED else Hit.NONE
-            home && away -> Hit.CONFIRMED
-            (home || away) && league -> Hit.CONFIRMED
-            home || away -> Hit.PARTIAL
+            home || away -> Hit.CONFIRMED
             else -> Hit.NONE
         }
     }
 
-    /** A provider's event channel ("BL 18:30 Frankfurt v Köln"): its name carries both teams. */
+    /** A provider's event channel: its name carries either side of the fixture. */
     fun isEventChannel(keys: Keys, channelName: String): Boolean {
-        val home = keys.home ?: return false
-        val away = keys.away ?: return false
         val tokens = TeamNames.tokens(channelName).toSet()
-        return home.foundIn(tokens) && away.foundIn(tokens)
+        return (keys.home?.foundIn(tokens) == true) || (keys.away?.foundIn(tokens) == true)
     }
 
     /**
@@ -121,7 +118,8 @@ object WatchMatcher {
     private val SEPARATOR = Regex("""#{3,}|={4,}|-{4,}|\*{4,}""")
 
     /**
-     * One list, one row per channel, best tier first; within a tier the input order (playlist order)
+     * One list, one row per channel, highest observed video quality first, then the match tier;
+     * unknown quality stays last. Within those groups the input order (playlist order)
      * is kept. [remembered] is the channel remembered for this competition, matched by portable name among
      * [rememberedCandidates] (a name search for it, so it is found even when nothing else lists it).
      */
