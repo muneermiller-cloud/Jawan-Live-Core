@@ -137,17 +137,17 @@ interface EpgDao {
     suspend fun programmeSummariesForChannels(epgKeys: List<String>, from: Long, to: Long): List<EpgProgrammeEntity>
 
     /**
-     * Programmes whose title contains [query] and that are on between [from] and [to] — what Search's
-     * "On TV" group is drawn from. Bounded by start time, so it reads through the `(startMs, stopMs)`
-     * index rather than the whole guide.
+     * Upcoming programmes whose title or synopsis contains [query]. Search covers the stored guide
+     * horizon; the lower time bound keeps the read on the `(startMs, stopMs)` index.
      */
     @Query(
         "SELECT id, sourceId, epgChannelId, startMs, stopMs, title, NULL AS description, 0 AS contentHash, " +
             "NULL AS categories, NULL AS year, NULL AS rating, NULL AS lengthMin, NULL AS episode " +
-            "FROM epg_programmes WHERE startMs > :from - 86400000 AND startMs < :to AND stopMs > :from " +
-            "AND title LIKE '%' || :query || '%' ORDER BY startMs ASC LIMIT :limit",
+            "FROM epg_programmes WHERE startMs > :from - 86400000 AND stopMs > :from " +
+            "AND (title LIKE '%' || :query || '%' OR description LIKE '%' || :query || '%') " +
+            "ORDER BY startMs ASC",
     )
-    suspend fun searchTitles(query: String, from: Long, to: Long, limit: Int): List<EpgProgrammeEntity>
+    suspend fun searchTitles(query: String, from: Long): List<EpgProgrammeEntity>
 
     /**
      * Every programme *starting* in `[from, to)` and still running after [minStop] — the Sports hub's
