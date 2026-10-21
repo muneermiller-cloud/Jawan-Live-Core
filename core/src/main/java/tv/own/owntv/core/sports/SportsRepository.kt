@@ -97,20 +97,19 @@ sealed interface WatchWindow {
     data object Ended : WatchWindow
 
     companion object {
-        const val BEFORE_MS = 30 * 60_000L
         const val AFTER_MS = 30 * 60_000L
 
         /** A finished match this device never saw end is taken to have ended this long after kick-off. */
         const val ASSUMED_LENGTH_MS = 2 * 60 * 60_000L
 
         /**
-         * From 30 min before kick-off to 30 min after the end, judged on a freshly fetched [m]: live is
-         * always open, however long it runs; postponed and cancelled never are.
+         * Open as soon as a fixture is listed, and through the match plus 30 min after its end.
+         * Postponed and cancelled fixtures never offer live channels.
          */
         fun of(m: Match, endedAt: Long?, now: Long): WatchWindow = when (m.state) {
             MatchState.IN -> Open
             MatchState.POSTPONED, MatchState.CANCELLED -> Ended
-            MatchState.PRE -> if (now >= m.startMs - BEFORE_MS) Open else TooEarly(m.startMs - BEFORE_MS)
+            MatchState.PRE -> Open
             MatchState.POST -> if (now < (endedAt ?: (m.startMs + ASSUMED_LENGTH_MS)) + AFTER_MS) Open else Ended
         }
     }
